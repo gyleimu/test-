@@ -24,49 +24,12 @@ jobs:
           Write-Host "Hermes received task:"
           Write-Host "${{ inputs.task }}"
 
-      - name: Repair Codex Windows install
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "Installing Microsoft Visual C++ Redistributable..."
-          $VcRedist = Join-Path $env:RUNNER_TEMP "vc_redist.x64.exe"
-          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $VcRedist
-          Start-Process -FilePath $VcRedist -ArgumentList "/install", "/quiet", "/norestart" -Wait
-
-          Write-Host "Installing/updating Codex CLI for Windows..."
-          powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://chatgpt.com/codex/install.ps1 | iex"
-
-          $CodexCommand = Get-Command codex -ErrorAction Stop
-          Write-Host "Codex command: $($CodexCommand.Source)"
-          codex --version
-
-          $SearchRoots = @(
-            (Split-Path $CodexCommand.Source -Parent),
-            "$env:USERPROFILE\.codex",
-            "$env:LOCALAPPDATA\Programs",
-            "$env:APPDATA\npm",
-            "$env:APPDATA\npm\node_modules\@openai\codex"
-          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
-
-          $SandboxHelper = Get-ChildItem -Path $SearchRoots -Recurse -Filter "codex-windows-sandbox-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-
-          if (!$SandboxHelper) {
-            throw "Codex Windows sandbox helper was not found after install: codex-windows-sandbox-setup.exe"
-          }
-
-          Write-Host "Codex sandbox helper: $($SandboxHelper.FullName)"
-          $HelperDir = $SandboxHelper.DirectoryName
-          Add-Content -Path $env:GITHUB_PATH -Value $HelperDir
-          $env:Path = "$HelperDir;$env:Path"
-
       - name: Check tools
         shell: powershell
         run: |
           git --version
           codex --version
           Get-Command codex
-          Get-Command codex-windows-sandbox-setup.exe
 
       - name: Run Codex in local repo
         shell: powershell
@@ -107,7 +70,7 @@ jobs:
           "@
 
           Write-Host "Running Codex..."
-          codex exec --full-auto $Prompt
+          codex exec --dangerously-bypass-approvals-and-sandbox $Prompt
 
           Write-Host "Git status after:"
           git status --short
