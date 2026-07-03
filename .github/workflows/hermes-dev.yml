@@ -22,15 +22,17 @@ jobs:
       NO_PROXY: localhost,127.0.0.1
       HERMES_CALLBACK_URL: ${{ secrets.HERMES_CALLBACK_URL }}
       HERMES_CALLBACK_SECRET: ${{ secrets.HERMES_CALLBACK_SECRET }}
+      HERMES_TASK: ${{ inputs.task }}
+      HERMES_RECEIVE_ID: ${{ inputs.receive_id }}
 
     steps:
       - name: Print task
         shell: pwsh
         run: |
           Write-Host "Hermes received task:"
-          Write-Host "${{ inputs.task }}"
+          Write-Host $env:HERMES_TASK
           Write-Host "Receive ID:"
-          Write-Host "${{ inputs.receive_id }}"
+          Write-Host $env:HERMES_RECEIVE_ID
 
       - name: Check tools
         shell: pwsh
@@ -64,21 +66,21 @@ jobs:
 
           git checkout -b $BranchName
 
-          $Prompt = @"
-          你是 Codex，本次由 Hermes 自动触发。
-
-          任务：
-          ${{ inputs.task }}
-
-          执行规则：
-          1. 先阅读相关代码，不要盲改。
-          2. 修改范围尽量小。
-          3. 不要删除已有测试。
-          4. 不要执行危险命令。
-          5. 修改后尽量运行已有测试或校验命令。
-          6. 不要提交 git，不要 push。
-          7. 完成后给出变更摘要。
-          "@
+          $Prompt = @(
+            "你是 Codex，本次由 Hermes 自动触发。",
+            "",
+            "任务：",
+            $env:HERMES_TASK,
+            "",
+            "执行规则：",
+            "1. 先阅读相关代码，不要盲改。",
+            "2. 修改范围尽量小。",
+            "3. 不要删除已有测试。",
+            "4. 不要执行危险命令。",
+            "5. 修改后尽量运行已有测试或校验命令。",
+            "6. 不要提交 git，不要 push。",
+            "7. 完成后给出变更摘要。"
+          ) -join [Environment]::NewLine
 
           Write-Host "Running Codex..."
           codex exec --dangerously-bypass-approvals-and-sandbox $Prompt
@@ -91,10 +93,8 @@ jobs:
           $DiffStat = git diff --stat | Out-String
           Write-Host $DiffStat
 
-          if ($env:HERMES_CALLBACK_URL -and "${{ inputs.receive_id }}") {
+          if ($env:HERMES_CALLBACK_URL -and $env:HERMES_RECEIVE_ID) {
             Write-Host "Sending callback to Hermes..."
 
             $Body = @{
-              receive_id = "${{ inputs.receive_id }}"
-              task = "${{ inputs.task }}"
-              status = "NEEDS_REVIEW"
+              receive_id = $env:HERMES_RECEIVE_ID
