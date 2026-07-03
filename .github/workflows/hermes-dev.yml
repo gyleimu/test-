@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Print task
-        shell: powershell
+        shell: pwsh
         run: |
           Write-Host "Hermes received task:"
           Write-Host "${{ inputs.task }}"
@@ -33,16 +33,19 @@ jobs:
           Write-Host "${{ inputs.receive_id }}"
 
       - name: Check tools
-        shell: powershell
+        shell: pwsh
         run: |
           git --version
           codex --version
           Get-Command codex
 
       - name: Run Codex in local repo
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $OutputEncoding = [System.Text.Encoding]::UTF8
           $RepoPath = "C:\Users\AL\Documents\CharacterOS"
 
           if (!(Test-Path $RepoPath)) {
@@ -95,20 +98,3 @@ jobs:
               receive_id = "${{ inputs.receive_id }}"
               task = "${{ inputs.task }}"
               status = "NEEDS_REVIEW"
-              branch = $BranchName
-              repo_path = $RepoPath
-              git_status = $GitStatus
-              diff_stat = $DiffStat
-            } | ConvertTo-Json -Depth 5
-
-            Invoke-RestMethod `
-              -Uri $env:HERMES_CALLBACK_URL `
-              -Method Post `
-              -Headers @{ "x-hermes-secret" = $env:HERMES_CALLBACK_SECRET } `
-              -Body $Body `
-              -ContentType "application/json"
-
-            Write-Host "Callback sent."
-          } else {
-            Write-Host "Callback skipped. Missing HERMES_CALLBACK_URL or receive_id."
-          }
