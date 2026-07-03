@@ -7,6 +7,10 @@ on:
         description: "Hermes dev task"
         required: true
         type: string
+      receive_id:
+        description: "Feishu receive id"
+        required: false
+        type: string
 
 jobs:
   run-dev-task:
@@ -16,6 +20,8 @@ jobs:
       HTTP_PROXY: http://127.0.0.1:7890
       HTTPS_PROXY: http://127.0.0.1:7890
       NO_PROXY: localhost,127.0.0.1
+      HERMES_CALLBACK_URL: ${{ secrets.HERMES_CALLBACK_URL }}
+      HERMES_CALLBACK_SECRET: ${{ secrets.HERMES_CALLBACK_SECRET }}
 
     steps:
       - name: Print task
@@ -23,6 +29,8 @@ jobs:
         run: |
           Write-Host "Hermes received task:"
           Write-Host "${{ inputs.task }}"
+          Write-Host "Receive ID:"
+          Write-Host "${{ inputs.receive_id }}"
 
       - name: Check tools
         shell: powershell
@@ -73,7 +81,34 @@ jobs:
           codex exec --dangerously-bypass-approvals-and-sandbox $Prompt
 
           Write-Host "Git status after:"
-          git status --short
+          $GitStatus = git status --short | Out-String
+          Write-Host $GitStatus
 
           Write-Host "Git diff:"
-          git diff --stat
+          $DiffStat = git diff --stat | Out-String
+          Write-Host $DiffStat
+
+          if ($env:HERMES_CALLBACK_URL -and "${{ inputs.receive_id }}") {
+            Write-Host "Sending callback to Hermes..."
+
+            $Body = @{
+              receive_id = "${{ inputs.receive_id }}"
+              task = "${{ inputs.task }}"
+              status = "NEEDS_REVIEW"
+              branch = $BranchName
+              repo_path = $RepoPath
+              git_status = $GitStatus
+              diff_stat = $DiffStat
+            } | ConvertTo-Json -Depth 5
+
+            Invoke-RestMethod `
+              -Uri $env:HERMES_CALLBACK_URL `
+              -Method Post `
+              -Headers @{ "x-hermes-secret" = $env:HERMES_CALLBACK_SECRET } `
+              -Body $Body `
+              -ContentType "application/json"
+
+            Write-Host "Callback sent."
+          } else {
+            Write-Host "Callback skipped. Missing HERMES_CALLBACK_URL or receive_id."
+          }
