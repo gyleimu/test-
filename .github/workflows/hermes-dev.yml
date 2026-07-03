@@ -1,0 +1,19 @@
+name: Hermes Dev Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Hermes dev task"
+        required: true
+        type: string
+
+jobs:
+  run-dev-task:
+    runs-on: self-hosted
+
+    steps:
+      - name: Print task
+        run: |
+          echo "Hermes received task:"
+          echo "${{ inputs.task }}"
