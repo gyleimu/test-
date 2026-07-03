@@ -20,8 +20,6 @@ jobs:
       HTTP_PROXY: http://127.0.0.1:7890
       HTTPS_PROXY: http://127.0.0.1:7890
       NO_PROXY: localhost,127.0.0.1
-      HERMES_CALLBACK_URL: ${{ secrets.HERMES_CALLBACK_URL }}
-      HERMES_CALLBACK_SECRET: ${{ secrets.HERMES_CALLBACK_SECRET }}
       HERMES_TASK: ${{ inputs.task }}
       HERMES_RECEIVE_ID: ${{ inputs.receive_id }}
 
@@ -48,8 +46,8 @@ jobs:
           [Console]::InputEncoding = [System.Text.Encoding]::UTF8
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $OutputEncoding = [System.Text.Encoding]::UTF8
-          $RepoPath = "C:\Users\AL\Documents\CharacterOS"
 
+          $RepoPath = "C:\Users\AL\Documents\CharacterOS"
           if (!(Test-Path $RepoPath)) {
             throw "Repo path not found: $RepoPath"
           }
@@ -63,38 +61,29 @@ jobs:
           git status --short
 
           $BranchName = "hermes/dev-" + (Get-Date -Format "yyyyMMdd-HHmmss")
-
           git checkout -b $BranchName
 
-          $Prompt = @(
-            "你是 Codex，本次由 Hermes 自动触发。",
-            "",
-            "任务：",
-            $env:HERMES_TASK,
-            "",
-            "执行规则：",
-            "1. 先阅读相关代码，不要盲改。",
-            "2. 修改范围尽量小。",
-            "3. 不要删除已有测试。",
-            "4. 不要执行危险命令。",
-            "5. 修改后尽量运行已有测试或校验命令。",
-            "6. 不要提交 git，不要 push。",
-            "7. 完成后给出变更摘要。"
-          ) -join [Environment]::NewLine
+          $PromptLines = New-Object System.Collections.Generic.List[string]
+          $PromptLines.Add("你是 Codex，本次由 Hermes 自动触发。")
+          $PromptLines.Add("")
+          $PromptLines.Add("任务：")
+          $PromptLines.Add($env:HERMES_TASK)
+          $PromptLines.Add("")
+          $PromptLines.Add("执行规则：")
+          $PromptLines.Add("1. 先阅读相关代码，不要盲改。")
+          $PromptLines.Add("2. 修改范围尽量小。")
+          $PromptLines.Add("3. 不要删除已有测试。")
+          $PromptLines.Add("4. 不要执行危险命令。")
+          $PromptLines.Add("5. 修改后尽量运行已有测试或校验命令。")
+          $PromptLines.Add("6. 不要提交 git，不要 push。")
+          $PromptLines.Add("7. 完成后给出变更摘要。")
+          $Prompt = $PromptLines -join [Environment]::NewLine
 
           Write-Host "Running Codex..."
           codex exec --dangerously-bypass-approvals-and-sandbox $Prompt
 
           Write-Host "Git status after:"
-          $GitStatus = git status --short | Out-String
-          Write-Host $GitStatus
+          git status --short
 
           Write-Host "Git diff:"
-          $DiffStat = git diff --stat | Out-String
-          Write-Host $DiffStat
-
-          if ($env:HERMES_CALLBACK_URL -and $env:HERMES_RECEIVE_ID) {
-            Write-Host "Sending callback to Hermes..."
-
-            $Body = @{
-              receive_id = $env:HERMES_RECEIVE_ID
+          git diff --stat
