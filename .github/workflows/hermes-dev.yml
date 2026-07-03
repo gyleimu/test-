@@ -12,6 +12,11 @@ jobs:
   run-dev-task:
     runs-on: self-hosted
 
+    env:
+      HTTP_PROXY: http://127.0.0.1:7890
+      HTTPS_PROXY: http://127.0.0.1:7890
+      NO_PROXY: localhost,127.0.0.1
+
     steps:
       - name: Print task
         shell: powershell
@@ -19,12 +24,54 @@ jobs:
           Write-Host "Hermes received task:"
           Write-Host "${{ inputs.task }}"
 
-      - name: Check Git
+      - name: Check tools
         shell: powershell
         run: |
           git --version
-      - name: Check Codex
+          codex --version
+
+      - name: Run Codex in local repo
         shell: powershell
         run: |
-         where.exe codex
-         codex --version
+          $RepoPath = "C:\Users\AL\Documents\CharacterOS"
+
+          if (!(Test-Path $RepoPath)) {
+            throw "Repo path not found: $RepoPath"
+          }
+
+          Set-Location $RepoPath
+
+          Write-Host "Current repo:"
+          Get-Location
+
+          Write-Host "Git status before:"
+          git status --short
+
+          $BranchName = "hermes/dev-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+
+          git checkout -b $BranchName
+
+          $Prompt = @"
+          你是 Codex，本次由 Hermes 自动触发。
+
+          任务：
+          ${{ inputs.task }}
+
+          执行规则：
+          1. 先阅读相关代码，不要盲改。
+          2. 修改范围尽量小。
+          3. 不要删除已有测试。
+          4. 不要执行危险命令。
+          5. 修改后尽量运行已有测试或校验命令。
+          6. 不要提交 git，不要 push。
+          7. 完成后给出变更摘要。
+          "@
+
+          Write-Host "Running Codex..."
+          codex exec --full-auto $Prompt
+
+          Write-Host "Git status after:"
+          git status --short
+
+          Write-Host "Git diff:"
+          git diff --stat
