@@ -22,6 +22,8 @@ jobs:
       NO_PROXY: localhost,127.0.0.1
       HERMES_TASK: ${{ inputs.task }}
       HERMES_RECEIVE_ID: ${{ inputs.receive_id }}
+      HERMES_CALLBACK_URL: ${{ secrets.HERMES_CALLBACK_URL }}
+      HERMES_CALLBACK_SECRET: ${{ secrets.HERMES_CALLBACK_SECRET }}
 
     steps:
       - name: Print task
@@ -62,6 +64,7 @@ jobs:
 
           $BranchName = "hermes/dev-" + (Get-Date -Format "yyyyMMdd-HHmmss")
           git checkout -b $BranchName
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP "hermes_branch.txt") -Value $BranchName -Encoding UTF8
 
           $PromptLines = New-Object System.Collections.Generic.List[string]
           $PromptLines.Add("你是 Codex，本次由 Hermes 自动触发。")
@@ -83,7 +86,15 @@ jobs:
           codex exec --dangerously-bypass-approvals-and-sandbox $Prompt
 
           Write-Host "Git status after:"
-          git status --short
+          $GitStatus = git status --short | Out-String
+          Write-Host $GitStatus
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP "hermes_git_status.txt") -Value $GitStatus -Encoding UTF8
 
           Write-Host "Git diff:"
-          git diff --stat
+          $DiffStat = git diff --stat | Out-String
+          Write-Host $DiffStat
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP "hermes_diff_stat.txt") -Value $DiffStat -Encoding UTF8
+
+      - name: Send callback to Hermes
+        if: always()
+        continue-on-error: true
