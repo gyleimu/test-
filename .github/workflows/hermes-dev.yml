@@ -98,3 +98,68 @@ jobs:
       - name: Send callback to Hermes
         if: always()
         continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (!$env:HERMES_CALLBACK_URL) {
+            Write-Host "Callback skipped. Missing HERMES_CALLBACK_URL."
+            exit 0
+          }
+
+          if (!$env:HERMES_RECEIVE_ID) {
+            Write-Host "Callback skipped. Missing receive_id."
+            exit 0
+          }
+
+          $CallbackScript = @'
+          const fs = require("fs");
+
+          function readText(path) {
+            try {
+              return fs.readFileSync(path, "utf8");
+            } catch {
+              return "";
+            }
+          }
+
+          async function main() {
+            const body = {
+              receive_id: process.env.HERMES_RECEIVE_ID || "",
+              task: process.env.HERMES_TASK || "",
+              status: "NEEDS_REVIEW",
+              branch: readText(process.env.HERMES_BRANCH_FILE || "").trim(),
+              repo_path: "C:\\Users\\AL\\Documents\\CharacterOS",
+              git_status: readText(process.env.HERMES_GIT_STATUS_FILE || ""),
+              diff_stat: readText(process.env.HERMES_DIFF_STAT_FILE || "")
+            };
+
+            const response = await fetch(process.env.HERMES_CALLBACK_URL, {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-hermes-secret": process.env.HERMES_CALLBACK_SECRET || ""
+              },
+              body: JSON.stringify(body)
+            });
+
+            const text = await response.text();
+            console.log(`Hermes callback HTTP ${response.status}`);
+            if (text) console.log(text);
+            if (!response.ok) process.exitCode = 1;
+          }
+
+          main().catch((error) => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          '@
+
+          $CallbackScriptPath = Join-Path $env:RUNNER_TEMP "hermes_callback.js"
+          Set-Content -Path $CallbackScriptPath -Value $CallbackScript -Encoding UTF8
+
+          $env:HERMES_BRANCH_FILE = Join-Path $env:RUNNER_TEMP "hermes_branch.txt"
+          $env:HERMES_GIT_STATUS_FILE = Join-Path $env:RUNNER_TEMP "hermes_git_status.txt"
+          $env:HERMES_DIFF_STAT_FILE = Join-Path $env:RUNNER_TEMP "hermes_diff_stat.txt"
+
+          node $CallbackScriptPath
