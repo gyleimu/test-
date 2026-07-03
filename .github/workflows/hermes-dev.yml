@@ -23,8 +23,8 @@ jobs:
         shell: powershell
         run: |
           git --version
-
       - name: Check Codex
         shell: powershell
         run: |
-          codex --version
+         where.exe codex
+         codex --version
