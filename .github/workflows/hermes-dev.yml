@@ -40,6 +40,7 @@ jobs:
           git --version
           codex --version
           Get-Command codex
+          node --version
 
       - name: Run Codex in local repo
         shell: pwsh
@@ -50,50 +51,131 @@ jobs:
           $OutputEncoding = [System.Text.Encoding]::UTF8
 
           $RepoPath = "C:\Users\AL\Documents\CharacterOS"
-          if (!(Test-Path $RepoPath)) {
-            throw "Repo path not found: $RepoPath"
+
+          $StatusFile = Join-Path $env:RUNNER_TEMP "hermes_status.txt"
+          $BranchFile = Join-Path $env:RUNNER_TEMP "hermes_branch.txt"
+          $GitStatusFile = Join-Path $env:RUNNER_TEMP "hermes_git_status.txt"
+          $DiffStatFile = Join-Path $env:RUNNER_TEMP "hermes_diff_stat.txt"
+          $ChangedFilesFile = Join-Path $env:RUNNER_TEMP "hermes_changed_files.txt"
+          $RiskFile = Join-Path $env:RUNNER_TEMP "hermes_risk.txt"
+
+          Set-Content -Path $StatusFile -Value "FAILED" -Encoding UTF8
+          Set-Content -Path $BranchFile -Value "" -Encoding UTF8
+          Set-Content -Path $GitStatusFile -Value "" -Encoding UTF8
+          Set-Content -Path $DiffStatFile -Value "" -Encoding UTF8
+          Set-Content -Path $ChangedFilesFile -Value "" -Encoding UTF8
+          Set-Content -Path $RiskFile -Value "UNKNOWN" -Encoding UTF8
+
+          try {
+            if (!(Test-Path $RepoPath)) {
+              throw "Repo path not found: $RepoPath"
+            }
+
+            Set-Location $RepoPath
+
+            Write-Host "Current repo:"
+            Get-Location
+
+            Write-Host "Git status before:"
+            $BeforeStatus = git status --porcelain
+            git status --short
+
+            if ($BeforeStatus) {
+              Write-Host ""
+              Write-Host "Repo is not clean before running Codex:"
+              Write-Host $BeforeStatus
+
+              Set-Content -Path $StatusFile -Value "REPO_NOT_CLEAN" -Encoding UTF8
+              Set-Content -Path $GitStatusFile -Value ($BeforeStatus | Out-String) -Encoding UTF8
+              Set-Content -Path $RiskFile -Value "HIGH" -Encoding UTF8
+
+              throw "Repo is not clean. Please commit, stash, or reset local changes before running Hermes dev task."
+            }
+
+            $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+            $RunId = $env:GITHUB_RUN_ID
+            $BranchName = "hermes/dev-$Timestamp-$RunId"
+
+            git checkout -b $BranchName
+            Set-Content -Path $BranchFile -Value $BranchName -Encoding UTF8
+
+            $PromptLines = New-Object System.Collections.Generic.List[string]
+            $PromptLines.Add("你是 Codex，本次由 Hermes 自动触发。")
+            $PromptLines.Add("")
+            $PromptLines.Add("任务：")
+            $PromptLines.Add($env:HERMES_TASK)
+            $PromptLines.Add("")
+            $PromptLines.Add("硬性约束：")
+            $PromptLines.Add("1. 只允许完成用户明确要求的修改。")
+            $PromptLines.Add("2. 如果用户说“不要改其他文件”，只能修改用户指定文件。")
+            $PromptLines.Add("3. 如果任务可以通过修改 README 完成，就不要修改 src、tests、docs、outputs。")
+            $PromptLines.Add("4. 不要做顺手优化。")
+            $PromptLines.Add("5. 不要升级架构。")
+            $PromptLines.Add("6. 不要新增无关文件。")
+            $PromptLines.Add("7. 不要提交 git，不要 push。")
+            $PromptLines.Add("8. 完成后必须停止，不要继续扩展任务。")
+            $PromptLines.Add("")
+            $PromptLines.Add("执行前先判断：")
+            $PromptLines.Add("- 需要修改哪些文件")
+            $PromptLines.Add("- 为什么只修改这些文件")
+            $PromptLines.Add("")
+            $PromptLines.Add("如果你认为任务不明确，宁可不修改，也不要乱改。")
+            $PromptLines.Add("")
+            $PromptLines.Add("完成后输出：")
+            $PromptLines.Add("- 实际修改了哪些文件")
+            $PromptLines.Add("- 如何验证")
+            $PromptLines.Add("- 是否存在风险")
+            $Prompt = $PromptLines -join [Environment]::NewLine
+
+            Write-Host "Running Codex..."
+            codex exec --dangerously-bypass-approvals-and-sandbox $Prompt
+
+            Write-Host "Git status after:"
+            $GitStatus = git status --short | Out-String
+            Write-Host $GitStatus
+            Set-Content -Path $GitStatusFile -Value $GitStatus -Encoding UTF8
+
+            Write-Host "Git diff:"
+            $DiffStat = git diff --stat | Out-String
+            Write-Host $DiffStat
+            Set-Content -Path $DiffStatFile -Value $DiffStat -Encoding UTF8
+
+            $ChangedFiles = git diff --name-only
+            $ChangedFilesText = $ChangedFiles | Out-String
+            Set-Content -Path $ChangedFilesFile -Value $ChangedFilesText -Encoding UTF8
+
+            $ChangedCount = 0
+            if ($ChangedFiles) {
+              $ChangedCount = @($ChangedFiles).Count
+            }
+
+            $Risk = "LOW"
+
+            if ($ChangedCount -gt 5) {
+              $Risk = "HIGH"
+            } elseif ($ChangedCount -gt 2) {
+              $Risk = "MEDIUM"
+            }
+
+            Set-Content -Path $RiskFile -Value $Risk -Encoding UTF8
+
+            if ($ChangedCount -eq 0) {
+              Set-Content -Path $StatusFile -Value "NO_CHANGES" -Encoding UTF8
+            } else {
+              Set-Content -Path $StatusFile -Value "NEEDS_REVIEW" -Encoding UTF8
+            }
           }
+          catch {
+            Write-Host ""
+            Write-Host "Hermes Codex job failed:" -ForegroundColor Red
+            Write-Host $_.Exception.Message -ForegroundColor Red
 
-          Set-Location $RepoPath
+            if (!(Test-Path $StatusFile)) {
+              Set-Content -Path $StatusFile -Value "FAILED" -Encoding UTF8
+            }
 
-          Write-Host "Current repo:"
-          Get-Location
-
-          Write-Host "Git status before:"
-          git status --short
-
-          $BranchName = "hermes/dev-" + (Get-Date -Format "yyyyMMdd-HHmmss")
-          git checkout -b $BranchName
-          Set-Content -Path (Join-Path $env:RUNNER_TEMP "hermes_branch.txt") -Value $BranchName -Encoding UTF8
-
-          $PromptLines = New-Object System.Collections.Generic.List[string]
-          $PromptLines.Add("你是 Codex，本次由 Hermes 自动触发。")
-          $PromptLines.Add("")
-          $PromptLines.Add("任务：")
-          $PromptLines.Add($env:HERMES_TASK)
-          $PromptLines.Add("")
-          $PromptLines.Add("执行规则：")
-          $PromptLines.Add("1. 先阅读相关代码，不要盲改。")
-          $PromptLines.Add("2. 修改范围尽量小。")
-          $PromptLines.Add("3. 不要删除已有测试。")
-          $PromptLines.Add("4. 不要执行危险命令。")
-          $PromptLines.Add("5. 修改后尽量运行已有测试或校验命令。")
-          $PromptLines.Add("6. 不要提交 git，不要 push。")
-          $PromptLines.Add("7. 完成后给出变更摘要。")
-          $Prompt = $PromptLines -join [Environment]::NewLine
-
-          Write-Host "Running Codex..."
-          codex exec --dangerously-bypass-approvals-and-sandbox $Prompt
-
-          Write-Host "Git status after:"
-          $GitStatus = git status --short | Out-String
-          Write-Host $GitStatus
-          Set-Content -Path (Join-Path $env:RUNNER_TEMP "hermes_git_status.txt") -Value $GitStatus -Encoding UTF8
-
-          Write-Host "Git diff:"
-          $DiffStat = git diff --stat | Out-String
-          Write-Host $DiffStat
-          Set-Content -Path (Join-Path $env:RUNNER_TEMP "hermes_diff_stat.txt") -Value $DiffStat -Encoding UTF8
+            throw
+          }
 
       - name: Send callback to Hermes
         if: always()
@@ -123,15 +205,36 @@ jobs:
             }
           }
 
+          function lines(text) {
+            return String(text || "")
+              .split(/\r?\n/)
+              .map(s => s.trim())
+              .filter(Boolean);
+          }
+
           async function main() {
+            const status = readText(process.env.HERMES_STATUS_FILE || "").trim() || "UNKNOWN";
+            const branch = readText(process.env.HERMES_BRANCH_FILE || "").trim();
+            const gitStatus = readText(process.env.HERMES_GIT_STATUS_FILE || "");
+            const diffStat = readText(process.env.HERMES_DIFF_STAT_FILE || "");
+            const changedFilesText = readText(process.env.HERMES_CHANGED_FILES_FILE || "");
+            const risk = readText(process.env.HERMES_RISK_FILE || "").trim() || "UNKNOWN";
+
+            const changedFiles = lines(changedFilesText);
+            const changedPreview = changedFiles.slice(0, 8).join("\n");
+
             const body = {
               receive_id: process.env.HERMES_RECEIVE_ID || "",
               task: process.env.HERMES_TASK || "",
-              status: "NEEDS_REVIEW",
-              branch: readText(process.env.HERMES_BRANCH_FILE || "").trim(),
+              status,
+              risk,
+              branch,
               repo_path: "C:\\Users\\AL\\Documents\\CharacterOS",
-              git_status: readText(process.env.HERMES_GIT_STATUS_FILE || ""),
-              diff_stat: readText(process.env.HERMES_DIFF_STAT_FILE || "")
+              changed_count: changedFiles.length,
+              changed_preview: changedPreview,
+              changed_files: changedFiles,
+              git_status: gitStatus,
+              diff_stat: diffStat
             };
 
             const response = await fetch(process.env.HERMES_CALLBACK_URL, {
@@ -158,8 +261,11 @@ jobs:
           $CallbackScriptPath = Join-Path $env:RUNNER_TEMP "hermes_callback.js"
           Set-Content -Path $CallbackScriptPath -Value $CallbackScript -Encoding UTF8
 
+          $env:HERMES_STATUS_FILE = Join-Path $env:RUNNER_TEMP "hermes_status.txt"
           $env:HERMES_BRANCH_FILE = Join-Path $env:RUNNER_TEMP "hermes_branch.txt"
           $env:HERMES_GIT_STATUS_FILE = Join-Path $env:RUNNER_TEMP "hermes_git_status.txt"
           $env:HERMES_DIFF_STAT_FILE = Join-Path $env:RUNNER_TEMP "hermes_diff_stat.txt"
+          $env:HERMES_CHANGED_FILES_FILE = Join-Path $env:RUNNER_TEMP "hermes_changed_files.txt"
+          $env:HERMES_RISK_FILE = Join-Path $env:RUNNER_TEMP "hermes_risk.txt"
 
           node $CallbackScriptPath
