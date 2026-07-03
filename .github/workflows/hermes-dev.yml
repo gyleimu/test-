@@ -62,7 +62,6 @@ jobs:
           codex --version
           Get-Command codex
           Get-Command codex-windows-sandbox-setup.exe
-          codex auth status
 
       - name: Run Codex in local repo
         shell: powershell
