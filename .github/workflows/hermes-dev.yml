@@ -1,103 +1,3 @@
-name: Hermes Dev Runner
-
-on:
-  workflow_dispatch:
-    inputs:
-      task:
-        description: "Hermes dev task"
-        required: true
-        type: string
-      receive_id:
-        description: "Feishu receive id"
-        required: false
-        type: string
-
-jobs:
-  run-dev-task:
-    runs-on: self-hosted
-
-    env:
-      HTTP_PROXY: http://127.0.0.1:7890
-      HTTPS_PROXY: http://127.0.0.1:7890
-      NO_PROXY: localhost,127.0.0.1
-      HERMES_TASK: ${{ inputs.task }}
-      HERMES_RECEIVE_ID: ${{ inputs.receive_id }}
-      HERMES_CALLBACK_URL: ${{ secrets.HERMES_CALLBACK_URL }}
-      HERMES_CALLBACK_SECRET: ${{ secrets.HERMES_CALLBACK_SECRET }}
-
-    steps:
-      - name: Print task
-        shell: pwsh
-        run: |
-          Write-Host "Hermes received task:"
-          Write-Host $env:HERMES_TASK
-          Write-Host "Receive ID:"
-          Write-Host $env:HERMES_RECEIVE_ID
-
-      - name: Check tools
-        shell: pwsh
-        run: |
-          git --version
-          codex --version
-          Get-Command codex
-          node --version
-
-      - name: Run Codex in local repo
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          [Console]::InputEncoding = [System.Text.Encoding]::UTF8
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $OutputEncoding = [System.Text.Encoding]::UTF8
-
-          $RepoPath = "C:\Users\AL\Documents\CharacterOS"
-
-          $StatusFile = Join-Path $env:RUNNER_TEMP "hermes_status.txt"
-          $BranchFile = Join-Path $env:RUNNER_TEMP "hermes_branch.txt"
-          $GitStatusFile = Join-Path $env:RUNNER_TEMP "hermes_git_status.txt"
-          $DiffStatFile = Join-Path $env:RUNNER_TEMP "hermes_diff_stat.txt"
-          $ChangedFilesFile = Join-Path $env:RUNNER_TEMP "hermes_changed_files.txt"
-          $RiskFile = Join-Path $env:RUNNER_TEMP "hermes_risk.txt"
-
-          Set-Content -Path $StatusFile -Value "FAILED" -Encoding UTF8
-          Set-Content -Path $BranchFile -Value "" -Encoding UTF8
-          Set-Content -Path $GitStatusFile -Value "" -Encoding UTF8
-          Set-Content -Path $DiffStatFile -Value "" -Encoding UTF8
-          Set-Content -Path $ChangedFilesFile -Value "" -Encoding UTF8
-          Set-Content -Path $RiskFile -Value "UNKNOWN" -Encoding UTF8
-
-          try {
-            if (!(Test-Path $RepoPath)) {
-              throw "Repo path not found: $RepoPath"
-            }
-
-            Set-Location $RepoPath
-
-            Write-Host "Current repo:"
-            Get-Location
-
-            Write-Host "Git status before:"
-            $BeforeStatus = git status --porcelain
-            git status --short
-
-            if ($BeforeStatus) {
-              Write-Host ""
-              Write-Host "Repo is not clean before running Codex:"
-              Write-Host $BeforeStatus
-
-              Set-Content -Path $StatusFile -Value "REPO_NOT_CLEAN" -Encoding UTF8
-              Set-Content -Path $GitStatusFile -Value ($BeforeStatus | Out-String) -Encoding UTF8
-              Set-Content -Path $RiskFile -Value "HIGH" -Encoding UTF8
-
-              throw "Repo is not clean. Please commit, stash, or reset local changes before running Hermes dev task."
-            }
-
-            $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-            $RunId = $env:GITHUB_RUN_ID
-            $BranchName = "hermes/dev-$Timestamp-$RunId"
-
-            git checkout -b $BranchName
-            Set-Content -Path $BranchFile -Value $BranchName -Encoding UTF8
 
             $PromptLines = New-Object System.Collections.Generic.List[string]
             $PromptLines.Add("你是 Codex，本次由 Hermes 自动触发。")
@@ -107,7 +7,7 @@ jobs:
             $PromptLines.Add("")
             $PromptLines.Add("硬性约束：")
             $PromptLines.Add("1. 只允许完成用户明确要求的修改。")
-            $PromptLines.Add("2. 如果用户说“不要改其他文件”，只能修改用户指定文件。")
+            $PromptLines.Add("2. 如果用户明确要求不要改其他文件，只能修改用户指定文件。")
             $PromptLines.Add("3. 如果任务可以通过修改 README 完成，就不要修改 src、tests、docs、outputs。")
             $PromptLines.Add("4. 不要做顺手优化。")
             $PromptLines.Add("5. 不要升级架构。")
