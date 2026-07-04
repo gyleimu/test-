@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Hermes dev mode: run / approve / rollback"
+        description: "Hermes dev mode: run / approve / rollback / sync"
         required: false
         default: "run"
         type: string
       task:
         description: "Hermes dev task"
-        required: true
+        required: false
+        default: ""
         type: string
       receive_id:
         description: "Feishu receive id"
@@ -39,24 +40,52 @@ jobs:
       - name: Print task
         shell: pwsh
         run: |
-          Write-Host "Hermes mode:"
-          Write-Host $env:HERMES_MODE
-
-          Write-Host "Hermes received task:"
-          Write-Host $env:HERMES_TASK
-
-          Write-Host "Receive ID:"
-          Write-Host $env:HERMES_RECEIVE_ID
+          Write-Host "Hermes mode: $env:HERMES_MODE"
+          Write-Host "Hermes task: $env:HERMES_TASK"
+          Write-Host "Receive ID: $env:HERMES_RECEIVE_ID"
+          Write-Host "Repo path: $env:HERMES_REPO_PATH"
 
       - name: Check tools
         shell: pwsh
         run: |
           git --version
-          codex --version
-          Get-Command codex
           node --version
+          if ($env:HERMES_MODE -eq "run") {
+            codex --version
+            Get-Command codex
+          }
 
       - name: Initialize Hermes state
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $files = @(
+            "hermes_status.txt",
+            "hermes_branch.txt",
+            "hermes_git_status.txt",
+            "hermes_diff_stat.txt",
+            "hermes_changed_files.txt",
+            "hermes_risk.txt",
+            "hermes_message.txt",
+            "hermes_commit.txt"
+          )
+
+          foreach ($f in $files) {
+            Set-Content -Path (Join-Path $env:RUNNER_TEMP $f) -Value "" -Encoding UTF8
+          }
+
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP "hermes_status.txt") -Value "STARTED" -Encoding UTF8
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP "hermes_risk.txt") -Value "UNKNOWN" -Encoding UTF8
+
+          if (Test-Path $env:HERMES_REPO_PATH) {
+            Set-Location $env:HERMES_REPO_PATH
+            $CurrentBranch = git branch --show-current
+            Set-Content -Path (Join-Path $env:RUNNER_TEMP "hermes_branch.txt") -Value $CurrentBranch -Encoding UTF8
+          }
+
+      - name: Sync local git state
+        if: ${{ env.HERMES_MODE == 'sync' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -68,19 +97,39 @@ jobs:
           $ChangedFilesFile = Join-Path $env:RUNNER_TEMP "hermes_changed_files.txt"
           $RiskFile = Join-Path $env:RUNNER_TEMP "hermes_risk.txt"
           $MessageFile = Join-Path $env:RUNNER_TEMP "hermes_message.txt"
+          $CommitFile = Join-Path $env:RUNNER_TEMP "hermes_commit.txt"
 
-          Set-Content -Path $StatusFile -Value "STARTED" -Encoding UTF8
-          Set-Content -Path $BranchFile -Value "" -Encoding UTF8
-          Set-Content -Path $GitStatusFile -Value "" -Encoding UTF8
-          Set-Content -Path $DiffStatFile -Value "" -Encoding UTF8
-          Set-Content -Path $ChangedFilesFile -Value "" -Encoding UTF8
-          Set-Content -Path $RiskFile -Value "UNKNOWN" -Encoding UTF8
-          Set-Content -Path $MessageFile -Value "" -Encoding UTF8
+          if (!(Test-Path $env:HERMES_REPO_PATH)) {
+            Set-Content -Path $StatusFile -Value "SYNC_FAILED" -Encoding UTF8
+            Set-Content -Path $RiskFile -Value "HIGH" -Encoding UTF8
+            Set-Content -Path $MessageFile -Value "Repo path not found: $env:HERMES_REPO_PATH" -Encoding UTF8
+            throw "Repo path not found"
+          }
 
-          if (Test-Path $env:HERMES_REPO_PATH) {
-            Set-Location $env:HERMES_REPO_PATH
-            $CurrentBranch = git branch --show-current
-            Set-Content -Path $BranchFile -Value $CurrentBranch -Encoding UTF8
+          Set-Location $env:HERMES_REPO_PATH
+
+          $CurrentBranch = git branch --show-current
+          $CommitHash = git rev-parse HEAD
+          $GitStatus = git status --short | Out-String
+          $DiffStat = git diff --stat | Out-String
+          $ChangedFiles = git status --porcelain | ForEach-Object {
+            if ($_.Length -gt 3) { $_.Substring(3) }
+          }
+
+          Set-Content -Path $BranchFile -Value $CurrentBranch -Encoding UTF8
+          Set-Content -Path $CommitFile -Value $CommitHash -Encoding UTF8
+          Set-Content -Path $GitStatusFile -Value $GitStatus -Encoding UTF8
+          Set-Content -Path $DiffStatFile -Value $DiffStat -Encoding UTF8
+          Set-Content -Path $ChangedFilesFile -Value ($ChangedFiles | Out-String) -Encoding UTF8
+
+          if ($GitStatus.Trim()) {
+            Set-Content -Path $StatusFile -Value "DIRTY" -Encoding UTF8
+            Set-Content -Path $RiskFile -Value "MEDIUM" -Encoding UTF8
+            Set-Content -Path $MessageFile -Value "本地仓库存在未提交改动，MySQL 状态应更新为 DIRTY。" -Encoding UTF8
+          } else {
+            Set-Content -Path $StatusFile -Value "CLEAN" -Encoding UTF8
+            Set-Content -Path $RiskFile -Value "LOW" -Encoding UTF8
+            Set-Content -Path $MessageFile -Value "本地仓库是干净的，MySQL 状态可以清理旧的 NEEDS_REVIEW。" -Encoding UTF8
           }
 
       - name: Run Codex in local repo
@@ -101,6 +150,7 @@ jobs:
           $ChangedFilesFile = Join-Path $env:RUNNER_TEMP "hermes_changed_files.txt"
           $RiskFile = Join-Path $env:RUNNER_TEMP "hermes_risk.txt"
           $MessageFile = Join-Path $env:RUNNER_TEMP "hermes_message.txt"
+          $CommitFile = Join-Path $env:RUNNER_TEMP "hermes_commit.txt"
 
           Set-Content -Path $StatusFile -Value "FAILED" -Encoding UTF8
 
@@ -112,31 +162,16 @@ jobs:
 
             Set-Location $RepoPath
 
-            Write-Host "Current repo:"
-            Get-Location
-
-            $CurrentBranch = git branch --show-current
-            Set-Content -Path $BranchFile -Value $CurrentBranch -Encoding UTF8
-
-            Write-Host "Git status before:"
             $BeforeStatus = git status --porcelain
-            git status --short
-
             if ($BeforeStatus) {
-              Write-Host ""
-              Write-Host "Repo is not clean before running Codex:"
-              Write-Host $BeforeStatus
-
               Set-Content -Path $StatusFile -Value "REPO_NOT_CLEAN" -Encoding UTF8
               Set-Content -Path $GitStatusFile -Value ($BeforeStatus | Out-String) -Encoding UTF8
               Set-Content -Path $RiskFile -Value "HIGH" -Encoding UTF8
-              Set-Content -Path $MessageFile -Value "本地仓库不干净。请先 approve / rollback / 手动处理后再运行新任务。" -Encoding UTF8
-
-              throw "Repo is not clean. Please commit, stash, or reset local changes before running Hermes dev task."
+              Set-Content -Path $MessageFile -Value "本地仓库不干净。请先 /project sync 查看状态，或 approve / rollback / 手动处理。" -Encoding UTF8
+              throw "Repo is not clean."
             }
 
             $BaseBranch = "main"
-
             git rev-parse --verify main *> $null
             if ($LASTEXITCODE -ne 0) {
               git rev-parse --verify master *> $null
@@ -145,7 +180,6 @@ jobs:
               }
             }
 
-            Write-Host "Checkout base branch: $BaseBranch"
             git checkout $BaseBranch
 
             $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -163,19 +197,11 @@ jobs:
             $PromptLines.Add("")
             $PromptLines.Add("硬性约束：")
             $PromptLines.Add("1. 只允许完成用户明确要求的修改。")
-            $PromptLines.Add("2. 如果用户明确要求不要改其他文件，只能修改用户指定文件。")
-            $PromptLines.Add("3. 如果任务可以通过修改 README 完成，就不要修改 src、tests、docs、outputs。")
-            $PromptLines.Add("4. 不要做顺手优化。")
-            $PromptLines.Add("5. 不要升级架构。")
-            $PromptLines.Add("6. 不要新增无关文件。")
-            $PromptLines.Add("7. 不要提交 git，不要 push。")
-            $PromptLines.Add("8. 完成后必须停止，不要继续扩展任务。")
-            $PromptLines.Add("")
-            $PromptLines.Add("执行前先判断：")
-            $PromptLines.Add("- 需要修改哪些文件")
-            $PromptLines.Add("- 为什么只修改这些文件")
-            $PromptLines.Add("")
-            $PromptLines.Add("如果你认为任务不明确，宁可不修改，也不要乱改。")
+            $PromptLines.Add("2. 不要做顺手优化。")
+            $PromptLines.Add("3. 不要升级架构。")
+            $PromptLines.Add("4. 不要新增无关文件。")
+            $PromptLines.Add("5. 不要提交 git，不要 push。")
+            $PromptLines.Add("6. 完成后必须停止，不要继续扩展任务。")
             $PromptLines.Add("")
             $PromptLines.Add("完成后输出：")
             $PromptLines.Add("- 实际修改了哪些文件")
@@ -184,35 +210,24 @@ jobs:
 
             $Prompt = $PromptLines -join [Environment]::NewLine
 
-            Write-Host "Running Codex..."
             codex exec --dangerously-bypass-approvals-and-sandbox $Prompt
 
-            Write-Host "Git status after:"
             $GitStatus = git status --short | Out-String
-            Write-Host $GitStatus
-            Set-Content -Path $GitStatusFile -Value $GitStatus -Encoding UTF8
-
-            Write-Host "Git diff:"
             $DiffStat = git diff --stat | Out-String
-            Write-Host $DiffStat
-            Set-Content -Path $DiffStatFile -Value $DiffStat -Encoding UTF8
-
             $ChangedFiles = git diff --name-only
-            $ChangedFilesText = $ChangedFiles | Out-String
-            Set-Content -Path $ChangedFilesFile -Value $ChangedFilesText -Encoding UTF8
+            $CommitHash = git rev-parse HEAD
+
+            Set-Content -Path $GitStatusFile -Value $GitStatus -Encoding UTF8
+            Set-Content -Path $DiffStatFile -Value $DiffStat -Encoding UTF8
+            Set-Content -Path $ChangedFilesFile -Value ($ChangedFiles | Out-String) -Encoding UTF8
+            Set-Content -Path $CommitFile -Value $CommitHash -Encoding UTF8
 
             $ChangedCount = 0
-            if ($ChangedFiles) {
-              $ChangedCount = @($ChangedFiles).Count
-            }
+            if ($ChangedFiles) { $ChangedCount = @($ChangedFiles).Count }
 
             $Risk = "LOW"
-
-            if ($ChangedCount -gt 5) {
-              $Risk = "HIGH"
-            } elseif ($ChangedCount -gt 2) {
-              $Risk = "MEDIUM"
-            }
+            if ($ChangedCount -gt 5) { $Risk = "HIGH" }
+            elseif ($ChangedCount -gt 2) { $Risk = "MEDIUM" }
 
             Set-Content -Path $RiskFile -Value $Risk -Encoding UTF8
 
@@ -225,18 +240,9 @@ jobs:
             }
           }
           catch {
-            Write-Host ""
-            Write-Host "Hermes Codex job failed:" -ForegroundColor Red
-            Write-Host $_.Exception.Message -ForegroundColor Red
-
-            if (!(Test-Path $StatusFile)) {
-              Set-Content -Path $StatusFile -Value "FAILED" -Encoding UTF8
-            }
-
             if (!(Test-Path $MessageFile)) {
               Set-Content -Path $MessageFile -Value $_.Exception.Message -Encoding UTF8
             }
-
             throw
           }
 
@@ -245,11 +251,6 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          [Console]::InputEncoding = [System.Text.Encoding]::UTF8
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $OutputEncoding = [System.Text.Encoding]::UTF8
-
-          $RepoPath = $env:HERMES_REPO_PATH
 
           $StatusFile = Join-Path $env:RUNNER_TEMP "hermes_status.txt"
           $BranchFile = Join-Path $env:RUNNER_TEMP "hermes_branch.txt"
@@ -258,93 +259,57 @@ jobs:
           $ChangedFilesFile = Join-Path $env:RUNNER_TEMP "hermes_changed_files.txt"
           $RiskFile = Join-Path $env:RUNNER_TEMP "hermes_risk.txt"
           $MessageFile = Join-Path $env:RUNNER_TEMP "hermes_message.txt"
+          $CommitFile = Join-Path $env:RUNNER_TEMP "hermes_commit.txt"
 
           Set-Content -Path $StatusFile -Value "APPROVE_FAILED" -Encoding UTF8
 
-          try {
-            if (!(Test-Path $RepoPath)) {
-              Set-Content -Path $MessageFile -Value "Repo path not found: $RepoPath" -Encoding UTF8
-              throw "Repo path not found: $RepoPath"
-            }
+          Set-Location $env:HERMES_REPO_PATH
 
-            Set-Location $RepoPath
+          $CurrentBranch = git branch --show-current
+          Set-Content -Path $BranchFile -Value $CurrentBranch -Encoding UTF8
 
-            $CurrentBranch = git branch --show-current
-            Set-Content -Path $BranchFile -Value $CurrentBranch -Encoding UTF8
-
-            Write-Host "Current branch:"
-            Write-Host $CurrentBranch
-
-            if (!$CurrentBranch.StartsWith("hermes/dev-")) {
-              Set-Content -Path $StatusFile -Value "APPROVE_BLOCKED" -Encoding UTF8
-              Set-Content -Path $RiskFile -Value "HIGH" -Encoding UTF8
-              Set-Content -Path $MessageFile -Value "当前分支不是 hermes/dev-*，拒绝提交，防止误提交主分支。" -Encoding UTF8
-              throw "Approve blocked. Current branch is not hermes/dev-*."
-            }
-
-            $GitStatus = git status --short | Out-String
-            $DiffStat = git diff --stat | Out-String
-            $ChangedFiles = git diff --name-only
-
-            Set-Content -Path $GitStatusFile -Value $GitStatus -Encoding UTF8
-            Set-Content -Path $DiffStatFile -Value $DiffStat -Encoding UTF8
-            Set-Content -Path $ChangedFilesFile -Value ($ChangedFiles | Out-String) -Encoding UTF8
-
-            $ChangedCount = 0
-            if ($ChangedFiles) {
-              $ChangedCount = @($ChangedFiles).Count
-            }
-
-            $Risk = "LOW"
-            if ($ChangedCount -gt 5) {
-              $Risk = "HIGH"
-            } elseif ($ChangedCount -gt 2) {
-              $Risk = "MEDIUM"
-            }
-            Set-Content -Path $RiskFile -Value $Risk -Encoding UTF8
-
-            if ($ChangedCount -eq 0) {
-              Set-Content -Path $StatusFile -Value "NO_CHANGES_TO_APPROVE" -Encoding UTF8
-              Set-Content -Path $MessageFile -Value "当前 Hermes dev 分支没有可提交改动。" -Encoding UTF8
-              Write-Host "No changes to approve."
-              exit 0
-            }
-
-            git config user.name "Hermes Bot"
-            git config user.email "hermes-bot@example.com"
-
-            git add -A
-
-            $CommitMessage = "Hermes dev approve: $env:HERMES_TASK"
-            git commit -m $CommitMessage
-
-            git push -u origin $CurrentBranch
-
-            Set-Content -Path $StatusFile -Value "APPROVED_PUSHED" -Encoding UTF8
-            Set-Content -Path $MessageFile -Value "已提交并推送当前 Hermes dev 分支。" -Encoding UTF8
+          if (!$CurrentBranch.StartsWith("hermes/dev-")) {
+            Set-Content -Path $StatusFile -Value "APPROVE_BLOCKED" -Encoding UTF8
+            Set-Content -Path $RiskFile -Value "HIGH" -Encoding UTF8
+            Set-Content -Path $MessageFile -Value "当前分支不是 hermes/dev-*，拒绝提交，防止误提交主分支。" -Encoding UTF8
+            throw "Approve blocked."
           }
-          catch {
-            Write-Host ""
-            Write-Host "Hermes approve failed:" -ForegroundColor Red
-            Write-Host $_.Exception.Message -ForegroundColor Red
 
-            if (!(Test-Path $MessageFile)) {
-              Set-Content -Path $MessageFile -Value $_.Exception.Message -Encoding UTF8
-            }
+          $GitStatus = git status --short | Out-String
+          $DiffStat = git diff --stat | Out-String
+          $ChangedFiles = git diff --name-only
 
-            throw
+          Set-Content -Path $GitStatusFile -Value $GitStatus -Encoding UTF8
+          Set-Content -Path $DiffStatFile -Value $DiffStat -Encoding UTF8
+          Set-Content -Path $ChangedFilesFile -Value ($ChangedFiles | Out-String) -Encoding UTF8
+
+          if (!$ChangedFiles) {
+            Set-Content -Path $StatusFile -Value "NO_CHANGES_TO_APPROVE" -Encoding UTF8
+            Set-Content -Path $RiskFile -Value "LOW" -Encoding UTF8
+            Set-Content -Path $MessageFile -Value "当前 Hermes dev 分支没有可提交改动。" -Encoding UTF8
+            exit 0
           }
+
+          git config user.name "Hermes Bot"
+          git config user.email "hermes-bot@example.com"
+
+          git add -A
+          git commit -m "Hermes dev approve: $env:HERMES_TASK"
+
+          $CommitHash = git rev-parse HEAD
+          Set-Content -Path $CommitFile -Value $CommitHash -Encoding UTF8
+
+          git push -u origin $CurrentBranch
+
+          Set-Content -Path $StatusFile -Value "APPROVED_PUSHED" -Encoding UTF8
+          Set-Content -Path $RiskFile -Value "LOW" -Encoding UTF8
+          Set-Content -Path $MessageFile -Value "已提交并推送当前 Hermes dev 分支。" -Encoding UTF8
 
       - name: Rollback Hermes dev branch
         if: ${{ env.HERMES_MODE == 'rollback' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          [Console]::InputEncoding = [System.Text.Encoding]::UTF8
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $OutputEncoding = [System.Text.Encoding]::UTF8
-
-          $RepoPath = $env:HERMES_REPO_PATH
 
           $StatusFile = Join-Path $env:RUNNER_TEMP "hermes_status.txt"
           $BranchFile = Join-Path $env:RUNNER_TEMP "hermes_branch.txt"
@@ -356,66 +321,40 @@ jobs:
 
           Set-Content -Path $StatusFile -Value "ROLLBACK_FAILED" -Encoding UTF8
 
-          try {
-            if (!(Test-Path $RepoPath)) {
-              Set-Content -Path $MessageFile -Value "Repo path not found: $RepoPath" -Encoding UTF8
-              throw "Repo path not found: $RepoPath"
-            }
+          Set-Location $env:HERMES_REPO_PATH
 
-            Set-Location $RepoPath
+          $CurrentBranch = git branch --show-current
+          Set-Content -Path $BranchFile -Value $CurrentBranch -Encoding UTF8
 
-            $CurrentBranch = git branch --show-current
-            Set-Content -Path $BranchFile -Value $CurrentBranch -Encoding UTF8
-
-            Write-Host "Current branch:"
-            Write-Host $CurrentBranch
-
-            if (!$CurrentBranch.StartsWith("hermes/dev-")) {
-              Set-Content -Path $StatusFile -Value "ROLLBACK_BLOCKED" -Encoding UTF8
-              Set-Content -Path $RiskFile -Value "HIGH" -Encoding UTF8
-              Set-Content -Path $MessageFile -Value "当前分支不是 hermes/dev-*，拒绝回滚，防止误清理主分支。" -Encoding UTF8
-              throw "Rollback blocked. Current branch is not hermes/dev-*."
-            }
-
-            $GitStatusBefore = git status --short | Out-String
-            $DiffStatBefore = git diff --stat | Out-String
-            $ChangedFilesBefore = git diff --name-only
-
-            Set-Content -Path $GitStatusFile -Value $GitStatusBefore -Encoding UTF8
-            Set-Content -Path $DiffStatFile -Value $DiffStatBefore -Encoding UTF8
-            Set-Content -Path $ChangedFilesFile -Value ($ChangedFilesBefore | Out-String) -Encoding UTF8
-
-            git reset --hard
-            git clean -fd
-
-            Set-Content -Path $StatusFile -Value "ROLLED_BACK" -Encoding UTF8
-            Set-Content -Path $RiskFile -Value "LOW" -Encoding UTF8
-            Set-Content -Path $MessageFile -Value "已回滚当前 Hermes dev 分支的本地改动。" -Encoding UTF8
+          if (!$CurrentBranch.StartsWith("hermes/dev-")) {
+            Set-Content -Path $StatusFile -Value "ROLLBACK_BLOCKED" -Encoding UTF8
+            Set-Content -Path $RiskFile -Value "HIGH" -Encoding UTF8
+            Set-Content -Path $MessageFile -Value "当前分支不是 hermes/dev-*，拒绝回滚，防止误清理主分支。" -Encoding UTF8
+            throw "Rollback blocked."
           }
-          catch {
-            Write-Host ""
-            Write-Host "Hermes rollback failed:" -ForegroundColor Red
-            Write-Host $_.Exception.Message -ForegroundColor Red
 
-            if (!(Test-Path $MessageFile)) {
-              Set-Content -Path $MessageFile -Value $_.Exception.Message -Encoding UTF8
-            }
+          $GitStatusBefore = git status --short | Out-String
+          $DiffStatBefore = git diff --stat | Out-String
+          $ChangedFilesBefore = git diff --name-only
 
-            throw
-          }
+          Set-Content -Path $GitStatusFile -Value $GitStatusBefore -Encoding UTF8
+          Set-Content -Path $DiffStatFile -Value $DiffStatBefore -Encoding UTF8
+          Set-Content -Path $ChangedFilesFile -Value ($ChangedFilesBefore | Out-String) -Encoding UTF8
+
+          git reset --hard
+          git clean -fd
+
+          Set-Content -Path $StatusFile -Value "ROLLED_BACK" -Encoding UTF8
+          Set-Content -Path $RiskFile -Value "LOW" -Encoding UTF8
+          Set-Content -Path $MessageFile -Value "已回滚当前 Hermes dev 分支的本地改动。" -Encoding UTF8
 
       - name: Invalid Hermes mode
-        if: ${{ env.HERMES_MODE != 'run' && env.HERMES_MODE != 'approve' && env.HERMES_MODE != 'rollback' }}
+        if: ${{ env.HERMES_MODE != 'run' && env.HERMES_MODE != 'approve' && env.HERMES_MODE != 'rollback' && env.HERMES_MODE != 'sync' }}
         shell: pwsh
         run: |
-          $StatusFile = Join-Path $env:RUNNER_TEMP "hermes_status.txt"
-          $RiskFile = Join-Path $env:RUNNER_TEMP "hermes_risk.txt"
-          $MessageFile = Join-Path $env:RUNNER_TEMP "hermes_message.txt"
-
-          Set-Content -Path $StatusFile -Value "INVALID_MODE" -Encoding UTF8
-          Set-Content -Path $RiskFile -Value "HIGH" -Encoding UTF8
-          Set-Content -Path $MessageFile -Value "无效 mode。只支持 run / approve / rollback。" -Encoding UTF8
-
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP "hermes_status.txt") -Value "INVALID_MODE" -Encoding UTF8
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP "hermes_risk.txt") -Value "HIGH" -Encoding UTF8
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP "hermes_message.txt") -Value "无效 mode。只支持 run / approve / rollback / sync。" -Encoding UTF8
           throw "Invalid Hermes mode: $env:HERMES_MODE"
 
       - name: Send callback to Hermes
@@ -434,6 +373,15 @@ jobs:
             Write-Host "Callback skipped. Missing receive_id."
             exit 0
           }
+
+          $env:HERMES_STATUS_FILE = Join-Path $env:RUNNER_TEMP "hermes_status.txt"
+          $env:HERMES_BRANCH_FILE = Join-Path $env:RUNNER_TEMP "hermes_branch.txt"
+          $env:HERMES_GIT_STATUS_FILE = Join-Path $env:RUNNER_TEMP "hermes_git_status.txt"
+          $env:HERMES_DIFF_STAT_FILE = Join-Path $env:RUNNER_TEMP "hermes_diff_stat.txt"
+          $env:HERMES_CHANGED_FILES_FILE = Join-Path $env:RUNNER_TEMP "hermes_changed_files.txt"
+          $env:HERMES_RISK_FILE = Join-Path $env:RUNNER_TEMP "hermes_risk.txt"
+          $env:HERMES_MESSAGE_FILE = Join-Path $env:RUNNER_TEMP "hermes_message.txt"
+          $env:HERMES_COMMIT_FILE = Join-Path $env:RUNNER_TEMP "hermes_commit.txt"
 
           $CallbackScript = @'
           const fs = require("fs");
@@ -456,6 +404,7 @@ jobs:
           async function main() {
             const status = readText(process.env.HERMES_STATUS_FILE || "").trim() || "UNKNOWN";
             const branch = readText(process.env.HERMES_BRANCH_FILE || "").trim();
+            const commit = readText(process.env.HERMES_COMMIT_FILE || "").trim();
             const gitStatus = readText(process.env.HERMES_GIT_STATUS_FILE || "");
             const diffStat = readText(process.env.HERMES_DIFF_STAT_FILE || "");
             const changedFilesText = readText(process.env.HERMES_CHANGED_FILES_FILE || "");
@@ -463,7 +412,6 @@ jobs:
             const message = readText(process.env.HERMES_MESSAGE_FILE || "").trim();
 
             const changedFiles = lines(changedFilesText);
-            const changedPreview = changedFiles.slice(0, 8).join("\n");
 
             const body = {
               receive_id: process.env.HERMES_RECEIVE_ID || "",
@@ -473,12 +421,14 @@ jobs:
               risk,
               message,
               branch,
+              commit,
               repo_path: process.env.HERMES_REPO_PATH || "",
               changed_count: changedFiles.length,
-              changed_preview: changedPreview,
+              changed_preview: changedFiles.slice(0, 8).join("\n"),
               changed_files: changedFiles,
               git_status: gitStatus,
-              diff_stat: diffStat
+              diff_stat: diffStat,
+              synced_at: new Date().toISOString()
             };
 
             const response = await fetch(process.env.HERMES_CALLBACK_URL, {
@@ -504,13 +454,5 @@ jobs:
 
           $CallbackScriptPath = Join-Path $env:RUNNER_TEMP "hermes_callback.js"
           Set-Content -Path $CallbackScriptPath -Value $CallbackScript -Encoding UTF8
-
-          $env:HERMES_STATUS_FILE = Join-Path $env:RUNNER_TEMP "hermes_status.txt"
-          $env:HERMES_BRANCH_FILE = Join-Path $env:RUNNER_TEMP "hermes_branch.txt"
-          $env:HERMES_GIT_STATUS_FILE = Join-Path $env:RUNNER_TEMP "hermes_git_status.txt"
-          $env:HERMES_DIFF_STAT_FILE = Join-Path $env:RUNNER_TEMP "hermes_diff_stat.txt"
-          $env:HERMES_CHANGED_FILES_FILE = Join-Path $env:RUNNER_TEMP "hermes_changed_files.txt"
-          $env:HERMES_RISK_FILE = Join-Path $env:RUNNER_TEMP "hermes_risk.txt"
-          $env:HERMES_MESSAGE_FILE = Join-Path $env:RUNNER_TEMP "hermes_message.txt"
 
           node $CallbackScriptPath
